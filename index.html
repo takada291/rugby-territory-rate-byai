@@ -60,13 +60,16 @@
     .label-right { background-color: #d32f2f; } /* レッド */
     .label-center { background-color: #1976d2; } /* ブルー */
     .label-error { background-color: #616161; }
+    
+    /* モデル名表示用のバッジ */
+    .model-badge { position: absolute; top: 10px; right: 10px; padding: 3px 6px; font-weight: bold; color: #fff; background: rgba(0,0,0,0.6); border-radius: 4px; font-size: 0.75rem; z-index: 10; display: none; user-select: none; }
   </style>
 </head>
 <body>
 
 <div class="container">
   <div class="panel">
-    <h1>🤖 テリトリー率AI判定 v1.0</h1>
+    <h1>🤖 テリトリー率AI判定 v1.1</h1>
     
     <div class="input-group">
       <label>Google Gemini APIキー</label>
@@ -146,6 +149,7 @@
         card.onclick = () => toggleManualState(index);
         card.innerHTML = `
           <div class="label-badge" id="badge-${index}">待機中</div>
+          <div class="model-badge" id="model-${index}"></div>
           <img src="${e.target.result}" id="img-${index}">
         `;
         gallery.appendChild(card);
@@ -179,6 +183,13 @@
     
     updateBadgeUI(index, nextState);
     recalculateStats();
+    
+    // 手動修正時はモデル名表示を「手動修正」にする
+    const modelBadge = document.getElementById(`model-${index}`);
+    if (modelBadge) {
+      modelBadge.textContent = '手動修正';
+      modelBadge.style.display = 'block';
+    }
   }
 
   function updateBadgeUI(index, state) {
@@ -235,6 +246,7 @@
       const promises = chunk.map(async (file, i) => {
         const globalIndex = chunkIndex * 3 + i;
         const badge = document.getElementById(`badge-${globalIndex}`);
+        const modelBadge = document.getElementById(`model-${globalIndex}`);
         const card = document.getElementById(`card-${globalIndex}`);
         
         badge.style.display = 'block';
@@ -243,6 +255,7 @@
 
         const imagePart = await fileToGenerativePart(file);
         let successState = 'Error';
+        let usedModel = 'API Error';
 
         for (const modelName of MODEL_CANDIDATES) {
           try {
@@ -256,16 +269,25 @@
             const data = JSON.parse(jsonMatch[0]);
             if (['Left', 'Right', 'Center'].includes(data.direction)) {
               successState = data.direction;
-              break;
+              usedModel = modelName;
+              break; // 成功したらループを抜ける
             } else {
               throw new Error("フォーマット違反");
             }
           } catch (error) {
             console.warn(`[${modelName}] 画像 ${globalIndex} の処理に失敗しました:`, error);
+            usedModel = `${modelName} Failed`;
           }
         }
 
         updateBadgeUI(globalIndex, successState);
+        
+        // モデル名の表示
+        if (modelBadge) {
+          modelBadge.textContent = usedModel;
+          modelBadge.style.display = 'block';
+        }
+        
         card.classList.add('done');
         
         processed++;
