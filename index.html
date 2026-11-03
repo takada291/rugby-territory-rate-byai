@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>テリトリー率AI判定</title>
+  
+  <!-- GA4 Tracking Code -->
+  <script async src="https://www.googletagmanager.com/gtag/js?id=G-8PJYQKC5F5"></script>
+  <script>
+    window.dataLayer = window.dataLayer || [];
+    function gtag(){dataLayer.push(arguments);}
+    gtag('js', new Date());
+    gtag('config', 'G-8PJYQKC5F5');
+  </script>
+
+  <!-- Chart.js for グラフ描画 -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+  <script type="importmap">
+    {
+      "imports": {
+        "@google/generative-ai": "https://esm.run/@google/generative-ai"
+      }
+    }
+  </script>
+
+  <style>
+    body { font-family: sans-serif; background-color: #f5f7fa; color: #333; margin: 0; padding: 20px; }
+    .container { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
+    
+    .panel { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    h1 { margin-top: 0; color: #1976d2; font-size: 1.5rem; border-bottom: 2px solid #e3f2fd; padding-bottom: 10px; }
+    
+    .input-group { margin-bottom: 15px; }
+    .input-group label { display: block; font-weight: bold; margin-bottom: 5px; color: #555; }
+    input[type="password"] { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; }
+    textarea { width: 100%; padding: 10px; border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; font-family: monospace; font-size: 0.9rem; resize: vertical; height: 120px; }
+    
+    .btn { background: #1976d2; color: white; border: none; padding: 12px 20px; font-size: 1.1rem; font-weight: bold; border-radius: 6px; cursor: pointer; width: 100%; transition: background 0.2s; }
+    .btn:hover { background: #1565c0; }
+    .btn:disabled { background: #ccc; cursor: not-allowed; }
+    
+    .dashboard { display: flex; gap: 20px; }
+    .chart-container { flex: 1; max-width: 400px; display: none; }
+    .status-container { flex: 1; display: flex; flex-direction: column; justify-content: center; }
+    
+    #progress-text { font-size: 1.2rem; font-weight: bold; color: #d32f2f; margin-bottom: 10px; }
+    
+    .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; margin-top: 20px; }
+    .thumb-card { position: relative; border: 2px solid #ddd; border-radius: 8px; overflow: hidden; background: #000; cursor: pointer; }
+    .thumb-card img { width: 100%; aspect-ratio: 16/9; object-fit: contain; display: block; opacity: 0.5; transition: opacity 0.3s; }
+    .thumb-card.done img { opacity: 1; }
+    .thumb-card:hover { border-color: #1976d2; }
+    
+    .label-badge { position: absolute; top: 10px; left: 10px; padding: 5px 10px; font-weight: bold; color: white; border-radius: 4px; font-size: 0.9rem; z-index: 10; display: none; user-select: none; }
+    .label-left { background-color: #ff9800; } /* オレンジ */
+    .label-right { background-color: #d32f2f; } /* レッド */
+    .label-center { background-color: #1976d2; } /* ブルー */
+    .label-error { background-color: #616161; }
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <div class="panel">
+    <h1>🤖 テリトリー率AI判定</h1>
+    
+    <div class="input-group">
+      <label>Google Gemini APIキー</label>
+      <input type="password" id="api-key" placeholder="APIキーを入力（ブラウザに保存されます）">
+    </div>
+
+    <div class="input-group">
+      <label>AIへの指示文（プロンプト） ※自由に書き換えて精度を調整できます</label>
+      <textarea id="prompt-text">
+あなたはこのラグビーの試合画像の分析者です。
+画像で緑の芝生の上に縦方向に写りこんでいる白いラインについて、その傾きが右肩上がりなら『左側』、右肩下がりなら『右側』、どちらともいえないなら『中央』と判定してください。
+
+出力は必ず以下のJSONフォーマットのみにしてください。他の文章は一切不要です。
+{"direction": "Left"} （白線の傾きが右肩上がり）
+{"direction": "Right"} （白線の傾きが右肩下がり）
+{"direction": "Center"} （どちらともいえない場合）</textarea>
+    </div>
+
+    <div class="input-group">
+      <label>分析する画像（連続スクショ）を選択</label>
+      <input type="file" id="image-upload" accept="image/*" multiple>
+    </div>
+    
+    <button id="btn-run" class="btn">🚀 AI判定スタート</button>
+  </div>
+
+  <div class="panel dashboard" id="dashboard-area">
+    <div class="status-container">
+      <div id="progress-text">準備完了（画像を選択してください）</div>
+      <div id="result-stats" style="font-size: 1.1rem; line-height: 1.8; display: none;"></div>
+    </div>
+    <div class="chart-container" id="chart-wrapper">
+      <canvas id="territoryChart"></canvas>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div style="display: flex; justify-content: space-between; align-items: center;">
+      <h3>判定結果ギャラリー</h3>
+      <span style="font-size: 0.9rem; color: #666;">※画像をクリックすると判定を「左→中央→右→エラー」の順で手動修正できます。</span>
+    </div>
+    <div class="gallery" id="gallery"></div>
+  </div>
+</div>
+
+<script type="module">
+  import { GoogleGenerativeAI } from "@google/generative-ai";
+
+  const apiKeyInput = document.getElementById('api-key');
+  const promptInput = document.getElementById('prompt-text');
+  const imageInput = document.getElementById('image-upload');
+  const btnRun = document.getElementById('btn-run');
+  const gallery = document.getElementById('gallery');
+  const progressText = document.getElementById('progress-text');
+  const chartWrapper = document.getElementById('chart-wrapper');
+  const resultStats = document.getElementById('result-stats');
+  
+  let chartInstance = null;
+  let imageStates = [];
+
+  const MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-2.5-flash"];
+
+  const savedKey = localStorage.getItem('gemini_api_key_rugby');
+  if(savedKey) apiKeyInput.value = savedKey;
+
+  imageInput.addEventListener('change', (e) => {
+    gallery.innerHTML = '';
+    imageStates = [];
+    const files = Array.from(e.target.files);
+    files.forEach((file, index) => {
+      imageStates.push('Waiting');
+      const reader = new FileReader();
+      reader.onload = (e) => {
+        const card = document.createElement('div');
+        card.className = 'thumb-card';
+        card.id = `card-${index}`;
+        card.onclick = () => toggleManualState(index);
+        card.innerHTML = `
+          <div class="label-badge" id="badge-${index}">待機中</div>
+          <img src="${e.target.result}" id="img-${index}">
+        `;
+        gallery.appendChild(card);
+      };
+      reader.readAsDataURL(file);
+    });
+    progressText.textContent = `${files.length}枚の画像が選択されました。`;
+    chartWrapper.style.display = 'none';
+    resultStats.style.display = 'none';
+  });
+
+  async function fileToGenerativePart(file) {
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        resolve({
+          inlineData: { data: reader.result.split(',')[1], mimeType: file.type }
+        });
+      };
+      reader.readAsDataURL(file);
+    });
+  }
+
+  function toggleManualState(index) {
+    if (imageStates[index] === 'Waiting') return; 
+    
+    const states = ['Left', 'Center', 'Right', 'Error'];
+    let currentIndex = states.indexOf(imageStates[index]);
+    let nextIndex = (currentIndex + 1) % states.length;
+    let nextState = states[nextIndex];
+    
+    updateBadgeUI(index, nextState);
+    recalculateStats();
+  }
+
+  function updateBadgeUI(index, state) {
+    imageStates[index] = state;
+    const badge = document.getElementById(`badge-${index}`);
+    badge.style.display = 'block';
+    
+    if (state === 'Left') {
+      badge.textContent = '◀ 左陣地';
+      badge.className = 'label-badge label-left';
+    } else if (state === 'Right') {
+      badge.textContent = '右陣地 ▶';
+      badge.className = 'label-badge label-right';
+    } else if (state === 'Center') {
+      badge.textContent = '・ 中 央';
+      badge.className = 'label-badge label-center';
+    } else {
+      badge.textContent = '判定エラー';
+      badge.className = 'label-badge label-error';
+    }
+  }
+
+  function recalculateStats() {
+    let counts = { Left: 0, Right: 0, Center: 0, Error: 0 };
+    imageStates.forEach(state => {
+      if (counts[state] !== undefined) counts[state]++;
+    });
+    drawChart(counts);
+  }
+
+  btnRun.addEventListener('click', async () => {
+    const apiKey = apiKeyInput.value.trim();
+    const customPrompt = promptInput.value.trim();
+    const files = Array.from(imageInput.files);
+    
+    if(!apiKey) { alert('APIキーを入力してください'); return; }
+    if(!customPrompt) { alert('プロンプトを入力してください'); return; }
+    if(files.length === 0) { alert('画像を選択してください'); return; }
+    
+    localStorage.setItem('gemini_api_key_rugby', apiKey);
+    btnRun.disabled = true;
+    
+    let processed = 0;
+    progressText.textContent = `判定中... (0 / ${files.length})`;
+
+    const genAI = new GoogleGenerativeAI(apiKey);
+
+    const chunkArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
+    const fileChunks = chunkArray(files, 3);
+
+    for (let chunkIndex = 0; chunkIndex < fileChunks.length; chunkIndex++) {
+      const chunk = fileChunks[chunkIndex];
+      
+      const promises = chunk.map(async (file, i) => {
+        const globalIndex = chunkIndex * 3 + i;
+        const badge = document.getElementById(`badge-${globalIndex}`);
+        const card = document.getElementById(`card-${globalIndex}`);
+        
+        badge.style.display = 'block';
+        badge.textContent = '思考中...';
+        badge.style.backgroundColor = '#424242';
+
+        const imagePart = await fileToGenerativePart(file);
+        let successState = 'Error';
+
+        for (const modelName of MODEL_CANDIDATES) {
+          try {
+            const model = genAI.getGenerativeModel({ model: modelName });
+            const result = await model.generateContent([customPrompt, imagePart]);
+            const responseText = result.response.text();
+            
+            const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
+            if (!jsonMatch) throw new Error("JSONが見つかりません");
+
+            const data = JSON.parse(jsonMatch[0]);
+            if (['Left', 'Right', 'Center'].includes(data.direction)) {
+              successState = data.direction;
+              break;
+            } else {
+              throw new Error("フォーマット違反");
+            }
+          } catch (error) {
+            console.warn(`[${modelName}] 画像 ${globalIndex} の処理に失敗しました:`, error);
+          }
+        }
+
+        updateBadgeUI(globalIndex, successState);
+        card.classList.add('done');
+        
+        processed++;
+        progressText.textContent = `判定中... (${processed} / ${files.length})`;
+      });
+
+      await Promise.all(promises);
+      
+      if(chunkIndex < fileChunks.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 1000));
+      }
+    }
+
+    progressText.textContent = '🎉 全画像の判定が完了しました！（画像をクリックで修正可能）';
+    btnRun.disabled = false;
+    
+    recalculateStats();
+  });
+
+  function drawChart(counts) {
+    chartWrapper.style.display = 'block';
+    resultStats.style.display = 'block';
+    
+    const totalValid = counts.Left + counts.Right; 
+    const leftRate = totalValid > 0 ? Math.round((counts.Left / totalValid) * 100) : 0;
+    const rightRate = totalValid > 0 ? Math.round((counts.Right / totalValid) * 100) : 0;
+    
+    resultStats.innerHTML = `
+      <strong>判定内訳:</strong><br>
+      <span style="color:#ff9800;">◀ 左陣地: ${counts.Left}枚</span><br>
+      <span style="color:#d32f2f;">▶ 右陣地: ${counts.Right}枚</span><br>
+      <span style="color:#1976d2;">・ 中 央: ${counts.Center}枚</span><br>
+      <span style="font-weight:bold; font-size:1.2rem; margin-top:10px; display:inline-block;">テリトリー率 (左 vs 右): <br>${leftRate}% vs ${rightRate}%</span>
+      ${counts.Error > 0 ? `<br><span style="color:#616161; font-size: 0.9rem;">※判定エラー: ${counts.Error}枚 (クリックで手動修正してください)</span>` : ''}
+    `;
+
+    if(chartInstance) chartInstance.destroy();
+    
+    const ctx = document.getElementById('territoryChart').getContext('2d');
+    chartInstance = new Chart(ctx, {
+      type: 'doughnut',
+      data: {
+        labels: ['右陣地', '中央', '左陣地'], // 順番を変更
+        datasets: [{
+          data: [counts.Right, counts.Center, counts.Left], // 順番を変更
+          backgroundColor: ['#d32f2f', '#1976d2', '#ff9800'], // レッド、ブルー、オレンジ
+          borderWidth: 2
+        }]
+      },
+      options: {
+        responsive: true,
+        plugins: {
+          legend: { position: 'bottom' }
+        },
+        rotation: -90, // 開始位置を上（12時方向）に設定
+        circumference: 360 // 円グラフ全体を描画
+      }
+    });
+  }
+</script>
+</body>
+</html>
