@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <!-- titleタグはバージョン番号なし -->
   <title>テリトリー率AI判定</title>
   
   <!-- GA4 Tracking Code -->
@@ -62,6 +63,10 @@
     .label-center { background-color: #1976d2; } /* ブルー */
     .label-error { background-color: #616161; }
     
+    /* 通し番号（右上に配置） */
+    .index-badge { position: absolute; top: 10px; right: 10px; padding: 3px 8px; font-weight: bold; color: #fff; background: rgba(0,0,0,0.7); border-radius: 4px; font-size: 0.85rem; z-index: 10; user-select: none; }
+
+    /* モデル名表示用（画像の下に配置するバー） */
     .model-badge { padding: 6px; font-weight: bold; color: #ccc; background: #222; font-size: 0.75rem; text-align: center; display: none; user-select: none; word-break: break-all; }
   </style>
 </head>
@@ -69,7 +74,7 @@
 
 <div class="container">
   <div class="panel">
-    <h1>🤖 テリトリー率AI判定 v1.3</h1>
+    <h1>🤖 テリトリー率AI判定 v1.4</h1>
     
     <div class="input-group">
       <label>Google Gemini APIキー</label>
@@ -128,8 +133,7 @@
   const resultStats = document.getElementById('result-stats');
   
   let chartInstance = null;
-  let imageStates = [];
-  // 画像のファイル名や抽出時間を保持する配列を追加
+  // ソートされた画像のデータと判定状態を1つのオブジェクト配列で管理
   let fileData = [];
 
   const MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-2.5-flash"];
@@ -137,13 +141,13 @@
   const savedKey = localStorage.getItem('gemini_api_key_rugby');
   if(savedKey) apiKeyInput.value = savedKey;
 
-  // ファイル名から経過時間（秒）を抽出する関数（例: 10m30s -> 630）
+  // ファイル名から経過時間（秒）を抽出する関数
   function extractTimeFromFilename(filename) {
     const match = filename.match(/(\d+)m(\d+)s/);
     if (match) {
       return parseInt(match[1]) * 60 + parseInt(match[2]);
     }
-    return null; // 時間形式が含まれていない場合
+    return null;
   }
 
   // 秒数を MM:SS 形式に変換
@@ -156,10 +160,9 @@
 
   imageInput.addEventListener('change', (e) => {
     gallery.innerHTML = '';
-    imageStates = [];
     fileData = [];
     
-    // ファイル名（時間）順にソートして処理する
+    // ファイル名（時間）順にソート
     const files = Array.from(e.target.files).sort((a, b) => {
       const timeA = extractTimeFromFilename(a.name) || 0;
       const timeB = extractTimeFromFilename(b.name) || 0;
@@ -167,13 +170,16 @@
     });
 
     files.forEach((file, index) => {
-      imageStates.push('Waiting');
       const timeSec = extractTimeFromFilename(file.name);
+      
+      // データ構造を統一: ソート後の順序で状態(state)を保持
       fileData.push({
         file: file,
         filename: file.name,
         timeSec: timeSec,
-        timeDisplay: formatTimeDisplay(timeSec)
+        timeDisplay: formatTimeDisplay(timeSec),
+        state: 'Waiting',
+        usedModel: '待機中'
       });
       
       const reader = new FileReader();
@@ -183,6 +189,7 @@
         card.id = `card-${index}`;
         card.onclick = () => toggleManualState(index);
         card.innerHTML = `
+          <div class="index-badge">画像${index + 1}</div>
           <div class="label-badge" id="badge-${index}">待機中</div>
           <img src="${e.target.result}" id="img-${index}">
           <div class="model-badge" id="model-${index}">
@@ -211,17 +218,20 @@
     });
   }
 
+  // 手動で状態を変更し、グラフを再描画する関数
   function toggleManualState(index) {
-    if (imageStates[index] === 'Waiting') return; 
+    const currentState = fileData[index].state;
+    if (currentState === 'Waiting') return; 
     
     const states = ['Left', 'Center', 'Right', 'Error'];
-    let currentIndex = states.indexOf(imageStates[index]);
+    let currentIndex = states.indexOf(currentState);
     let nextIndex = (currentIndex + 1) % states.length;
     let nextState = states[nextIndex];
     
     updateBadgeUI(index, nextState);
     recalculateStats();
     
+    // 手動修正時はモデル名表示を「手動修正」にする
     const modelBadge = document.getElementById(`model-${index}`);
     if (modelBadge) {
       const timeStr = fileData[index].timeDisplay;
@@ -229,11 +239,13 @@
     }
   }
 
+  // バッジの見た目とデータ上の状態を更新する関数
   function updateBadgeUI(index, state) {
-    imageStates[index] = state;
+    fileData[index].state = state;
     const badge = document.getElementById(`badge-${index}`);
+    if (!badge) return;
+
     badge.style.display = 'block';
-    
     if (state === 'Left') {
       badge.textContent = '◀ 左陣地';
       badge.className = 'label-badge label-left';
@@ -249,10 +261,11 @@
     }
   }
 
+  // 数値を集計してグラフを描画
   function recalculateStats() {
     let counts = { Left: 0, Right: 0, Center: 0, Error: 0 };
-    imageStates.forEach(state => {
-      if (counts[state] !== undefined) counts[state]++;
+    fileData.forEach(item => {
+      if (counts[item.state] !== undefined) counts[item.state]++;
     });
     drawChart(counts);
   }
@@ -317,6 +330,7 @@
         }
 
         updateBadgeUI(globalIndex, successState);
+        fileData[globalIndex].usedModel = usedModel;
         
         if (modelBadge) {
           const timeStr = dataObj.timeDisplay;
@@ -368,15 +382,14 @@
     const dataLeft = [];
     const dataCenter = [];
     const dataRight = [];
-    const backgroundColors = [];
 
-    // 各画像の判定結果を時間軸に沿って1個のブロックとして配置
-    fileData.forEach((dataObj, i) => {
-       const state = imageStates[i];
-       const label = dataObj.timeDisplay || `画像${i+1}`;
+    // データ配列(fileData)から順に取得し、状態とラベルを同期させる
+    fileData.forEach((item, i) => {
+       const state = item.state;
+       // ラベルは通し番号「画像〇」とする
+       const label = `画像${i + 1}`;
        timeLabels.push(label);
        
-       // 各時間点での状態を1とする
        dataLeft.push(state === 'Left' ? 1 : 0);
        dataCenter.push(state === 'Center' ? 1 : 0);
        dataRight.push(state === 'Right' ? 1 : 0);
@@ -393,7 +406,7 @@
             data: dataLeft,
             backgroundColor: '#ff9800',
             barPercentage: 1.0,
-            categoryPercentage: 1.0 // 隙間をなくして帯状にする
+            categoryPercentage: 1.0 
           },
           {
             label: '中央',
@@ -428,7 +441,7 @@
         scales: {
           x: {
             stacked: true,
-            title: { display: true, text: '試合経過時間' },
+            title: { display: true, text: '試合経過' },
             grid: { display: false }
           },
           y: {
