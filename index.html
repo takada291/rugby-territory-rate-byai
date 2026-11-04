@@ -3,7 +3,6 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- titleタグはバージョン番号なし -->
   <title>テリトリー率AI判定</title>
   
   <!-- GA4 Tracking Code -->
@@ -45,14 +44,13 @@
     .dashboard { display: flex; flex-direction: column; gap: 20px; }
     .status-container { flex: 1; display: flex; flex-direction: column; justify-content: center; }
     
-    /* 棒グラフ用コンテナの高さ調整 */
-    .chart-container { width: 100%; max-width: 800px; margin: 0 auto; display: none; height: 120px; }
+    /* タイムライン用の高さに調整 */
+    .chart-container { width: 100%; margin: 0 auto; display: none; height: 150px; }
     
     #progress-text { font-size: 1.2rem; font-weight: bold; color: #d32f2f; margin-bottom: 10px; }
     
     .gallery { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 15px; margin-top: 20px; }
     
-    /* カード全体のレイアウト変更（画像の下にテキストを置くためflex columnに） */
     .thumb-card { position: relative; border: 2px solid #ddd; border-radius: 8px; overflow: hidden; background: #000; cursor: pointer; display: flex; flex-direction: column; }
     .thumb-card img { width: 100%; aspect-ratio: 16/9; object-fit: contain; display: block; opacity: 0.5; transition: opacity 0.3s; flex: 1; }
     .thumb-card.done img { opacity: 1; }
@@ -64,7 +62,6 @@
     .label-center { background-color: #1976d2; } /* ブルー */
     .label-error { background-color: #616161; }
     
-    /* モデル名表示用（画像の下に配置するバー） */
     .model-badge { padding: 6px; font-weight: bold; color: #ccc; background: #222; font-size: 0.75rem; text-align: center; display: none; user-select: none; word-break: break-all; }
   </style>
 </head>
@@ -72,8 +69,7 @@
 
 <div class="container">
   <div class="panel">
-    <!-- H1タグはバージョン番号を1.2に更新 -->
-    <h1>🤖 テリトリー率AI判定 v1.2</h1>
+    <h1>🤖 テリトリー率AI判定 v1.3</h1>
     
     <div class="input-group">
       <label>Google Gemini APIキー</label>
@@ -93,7 +89,7 @@
     </div>
 
     <div class="input-group">
-      <label>分析する画像（連続スクショ）を選択</label>
+      <label>分析する画像（ビデオクリップから抽出した画像など）を選択</label>
       <input type="file" id="image-upload" accept="image/*" multiple>
     </div>
     
@@ -133,18 +129,53 @@
   
   let chartInstance = null;
   let imageStates = [];
+  // 画像のファイル名や抽出時間を保持する配列を追加
+  let fileData = [];
 
   const MODEL_CANDIDATES = ["gemini-3.6-flash", "gemini-2.5-flash"];
 
   const savedKey = localStorage.getItem('gemini_api_key_rugby');
   if(savedKey) apiKeyInput.value = savedKey;
 
+  // ファイル名から経過時間（秒）を抽出する関数（例: 10m30s -> 630）
+  function extractTimeFromFilename(filename) {
+    const match = filename.match(/(\d+)m(\d+)s/);
+    if (match) {
+      return parseInt(match[1]) * 60 + parseInt(match[2]);
+    }
+    return null; // 時間形式が含まれていない場合
+  }
+
+  // 秒数を MM:SS 形式に変換
+  function formatTimeDisplay(seconds) {
+    if (seconds === null) return '';
+    const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+    const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+    return `${m}:${s}`;
+  }
+
   imageInput.addEventListener('change', (e) => {
     gallery.innerHTML = '';
     imageStates = [];
-    const files = Array.from(e.target.files);
+    fileData = [];
+    
+    // ファイル名（時間）順にソートして処理する
+    const files = Array.from(e.target.files).sort((a, b) => {
+      const timeA = extractTimeFromFilename(a.name) || 0;
+      const timeB = extractTimeFromFilename(b.name) || 0;
+      return timeA - timeB;
+    });
+
     files.forEach((file, index) => {
       imageStates.push('Waiting');
+      const timeSec = extractTimeFromFilename(file.name);
+      fileData.push({
+        file: file,
+        filename: file.name,
+        timeSec: timeSec,
+        timeDisplay: formatTimeDisplay(timeSec)
+      });
+      
       const reader = new FileReader();
       reader.onload = (e) => {
         const card = document.createElement('div');
@@ -154,12 +185,15 @@
         card.innerHTML = `
           <div class="label-badge" id="badge-${index}">待機中</div>
           <img src="${e.target.result}" id="img-${index}">
-          <div class="model-badge" id="model-${index}"></div>
+          <div class="model-badge" id="model-${index}">
+             ${timeSec !== null ? `⏱️ ${formatTimeDisplay(timeSec)}` : '待機中'}
+          </div>
         `;
         gallery.appendChild(card);
       };
       reader.readAsDataURL(file);
     });
+    
     progressText.textContent = `${files.length}枚の画像が選択されました。`;
     chartWrapper.style.display = 'none';
     resultStats.style.display = 'none';
@@ -188,12 +222,10 @@
     updateBadgeUI(index, nextState);
     recalculateStats();
     
-    // 手動修正時はモデル名表示を「手動修正」にする
     const modelBadge = document.getElementById(`model-${index}`);
     if (modelBadge) {
-      modelBadge.textContent = '手動修正';
-      modelBadge.style.color = '#fff';
-      modelBadge.style.display = 'block';
+      const timeStr = fileData[index].timeDisplay;
+      modelBadge.innerHTML = `${timeStr ? `⏱️ ${timeStr}<br>` : ''}<span style="color:#fff;">手動修正</span>`;
     }
   }
 
@@ -228,27 +260,26 @@
   btnRun.addEventListener('click', async () => {
     const apiKey = apiKeyInput.value.trim();
     const customPrompt = promptInput.value.trim();
-    const files = Array.from(imageInput.files);
     
     if(!apiKey) { alert('APIキーを入力してください'); return; }
     if(!customPrompt) { alert('プロンプトを入力してください'); return; }
-    if(files.length === 0) { alert('画像を選択してください'); return; }
+    if(fileData.length === 0) { alert('画像を選択してください'); return; }
     
     localStorage.setItem('gemini_api_key_rugby', apiKey);
     btnRun.disabled = true;
     
     let processed = 0;
-    progressText.textContent = `判定中... (0 / ${files.length})`;
+    progressText.textContent = `判定中... (0 / ${fileData.length})`;
 
     const genAI = new GoogleGenerativeAI(apiKey);
 
     const chunkArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
-    const fileChunks = chunkArray(files, 3);
+    const fileChunks = chunkArray(fileData, 3);
 
     for (let chunkIndex = 0; chunkIndex < fileChunks.length; chunkIndex++) {
       const chunk = fileChunks[chunkIndex];
       
-      const promises = chunk.map(async (file, i) => {
+      const promises = chunk.map(async (dataObj, i) => {
         const globalIndex = chunkIndex * 3 + i;
         const badge = document.getElementById(`badge-${globalIndex}`);
         const modelBadge = document.getElementById(`model-${globalIndex}`);
@@ -258,7 +289,7 @@
         badge.textContent = '思考中...';
         badge.style.backgroundColor = '#424242';
 
-        const imagePart = await fileToGenerativePart(file);
+        const imagePart = await fileToGenerativePart(dataObj.file);
         let successState = 'Error';
         let usedModel = 'API Error';
 
@@ -275,7 +306,7 @@
             if (['Left', 'Right', 'Center'].includes(data.direction)) {
               successState = data.direction;
               usedModel = modelName;
-              break; // 成功したらループを抜ける
+              break; 
             } else {
               throw new Error("フォーマット違反");
             }
@@ -287,22 +318,20 @@
 
         updateBadgeUI(globalIndex, successState);
         
-        // モデル名の表示（テキスト色をエラー時は赤っぽく変更）
         if (modelBadge) {
-          modelBadge.textContent = usedModel;
-          modelBadge.style.color = usedModel.includes('Failed') ? '#ff8a80' : '#ccc';
+          const timeStr = dataObj.timeDisplay;
+          const color = usedModel.includes('Failed') ? '#ff8a80' : '#ccc';
+          modelBadge.innerHTML = `${timeStr ? `⏱️ ${timeStr}<br>` : ''}<span style="color:${color};">${usedModel}</span>`;
           modelBadge.style.display = 'block';
         }
         
         card.classList.add('done');
-        
         processed++;
-        progressText.textContent = `判定中... (${processed} / ${files.length})`;
+        progressText.textContent = `判定中... (${processed} / ${fileData.length})`;
       });
 
       await Promise.all(promises);
       
-      // API制限対策（3秒に延長してエラー率を下げる）
       if(chunkIndex < fileChunks.length - 1) {
         await new Promise(resolve => setTimeout(resolve, 3000));
       }
@@ -323,42 +352,66 @@
     const rightRate = totalValid > 0 ? Math.round((counts.Right / totalValid) * 100) : 0;
     
     resultStats.innerHTML = `
-      <strong>判定内訳:</strong>
+      <strong>全体判定内訳:</strong>
       <span style="color:#ff9800; margin-left: 10px;">◀ 左陣地: ${counts.Left}枚</span>
       <span style="color:#1976d2; margin-left: 10px;">・ 中 央: ${counts.Center}枚</span>
       <span style="color:#d32f2f; margin-left: 10px;">▶ 右陣地: ${counts.Right}枚</span>
       <br>
-      <span style="font-weight:bold; font-size:1.2rem; margin-top:5px; display:inline-block;">テリトリー率 (左 vs 右): ${leftRate}% vs ${rightRate}%</span>
+      <span style="font-weight:bold; font-size:1.2rem; margin-top:5px; display:inline-block;">総合テリトリー率 (左 vs 右): ${leftRate}% vs ${rightRate}%</span>
       ${counts.Error > 0 ? `<br><span style="color:#616161; font-size: 0.9rem;">※判定エラー: ${counts.Error}枚 (クリックで手動修正してください)</span>` : ''}
     `;
 
     if(chartInstance) chartInstance.destroy();
     
+    // タイムライン描画用のデータ生成
+    const timeLabels = [];
+    const dataLeft = [];
+    const dataCenter = [];
+    const dataRight = [];
+    const backgroundColors = [];
+
+    // 各画像の判定結果を時間軸に沿って1個のブロックとして配置
+    fileData.forEach((dataObj, i) => {
+       const state = imageStates[i];
+       const label = dataObj.timeDisplay || `画像${i+1}`;
+       timeLabels.push(label);
+       
+       // 各時間点での状態を1とする
+       dataLeft.push(state === 'Left' ? 1 : 0);
+       dataCenter.push(state === 'Center' ? 1 : 0);
+       dataRight.push(state === 'Right' ? 1 : 0);
+    });
+
     const ctx = document.getElementById('territoryChart').getContext('2d');
     chartInstance = new Chart(ctx, {
       type: 'bar',
       data: {
-        labels: ['テリトリー分布'],
+        labels: timeLabels,
         datasets: [
           {
             label: '左陣地',
-            data: [counts.Left],
-            backgroundColor: '#ff9800'
+            data: dataLeft,
+            backgroundColor: '#ff9800',
+            barPercentage: 1.0,
+            categoryPercentage: 1.0 // 隙間をなくして帯状にする
           },
           {
             label: '中央',
-            data: [counts.Center],
-            backgroundColor: '#1976d2'
+            data: dataCenter,
+            backgroundColor: '#1976d2',
+            barPercentage: 1.0,
+            categoryPercentage: 1.0
           },
           {
             label: '右陣地',
-            data: [counts.Right],
-            backgroundColor: '#d32f2f'
+            data: dataRight,
+            backgroundColor: '#d32f2f',
+            barPercentage: 1.0,
+            categoryPercentage: 1.0
           }
         ]
       },
       options: {
-        indexAxis: 'y', // 横棒グラフに設定
         responsive: true,
         maintainAspectRatio: false,
         plugins: {
@@ -366,14 +419,8 @@
           tooltip: {
             callbacks: {
               label: function(context) {
-                let label = context.dataset.label || '';
-                if (label) {
-                  label += ': ';
-                }
-                if (context.parsed.x !== null) {
-                  label += context.parsed.x + ' 枚';
-                }
-                return label;
+                // 1が立っているデータセットのラベルだけ表示
+                return context.raw === 1 ? context.dataset.label : null;
               }
             }
           }
@@ -381,11 +428,13 @@
         scales: {
           x: {
             stacked: true,
-            display: false // X軸の目盛りを非表示にしてスッキリさせる
+            title: { display: true, text: '試合経過時間' },
+            grid: { display: false }
           },
           y: {
             stacked: true,
-            display: false // Y軸のラベルも非表示
+            display: false,
+            max: 1 // 高さを一定にする
           }
         }
       }
