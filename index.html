@@ -17,14 +17,6 @@
   <!-- Chart.js for グラフ描画 -->
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 
-  <script type="importmap">
-    {
-      "imports": {
-        "@google/generative-ai": "https://esm.run/@google/generative-ai"
-      }
-    }
-  </script>
-
   <style>
     body { font-family: sans-serif; background-color: #f5f7fa; color: #333; margin: 0; padding: 20px; }
     .container { max-width: 1000px; margin: 0 auto; display: flex; flex-direction: column; gap: 20px; }
@@ -69,7 +61,7 @@
 
 <div class="container">
   <div class="panel">
-    <h1>🤖 テリトリー率AI判定 v1.5</h1>
+    <h1>🤖 テリトリー率AI判定 v1.6</h1>
     
     <div class="input-group">
       <label>Google Gemini APIキー</label>
@@ -115,9 +107,7 @@
   </div>
 </div>
 
-<script type="module">
-  import { GoogleGenerativeAI } from "@google/generative-ai";
-
+<script>
   const apiKeyInput = document.getElementById('api-key');
   const promptInput = document.getElementById('prompt-text');
   const imageInput = document.getElementById('image-upload');
@@ -130,7 +120,9 @@
   let chartInstance = null;
   let fileData = [];
 
-  const MODEL_CANDIDATES = ["gemini-3.8-flash", "gemini-3.6-flash"];
+  // 最新モデル優先順位＆思考レベルLOW固定
+  const MODEL_CANDIDATES = ["gemini-4-hydrogen", "gemini-3.8-flash", "gemini-2.5-flash"];
+  const FIXED_THINKING_LEVEL = "LOW";
 
   const savedKey = localStorage.getItem('gemini_api_key_rugby');
   if(savedKey) apiKeyInput.value = savedKey;
@@ -148,6 +140,72 @@
     const m = Math.floor(seconds / 60).toString().padStart(2, '0');
     const s = Math.floor(seconds % 60).toString().padStart(2, '0');
     return `${m}:${s}`;
+  }
+
+  // タイムアウト付きfetch
+  async function fetchWithTimeout(url, options, timeoutMs = 45000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // Gemini API 呼び出し共通基盤 (Hydrogen優先・思考レベルLOW固定・フォールバック付き)
+  async function callGeminiWithFallback(apiKey, basePayload) {
+    let lastErrorModel = "API Error";
+
+    for (const modelName of MODEL_CANDIDATES) {
+      const supportsThinking = modelName.startsWith("gemini-4") || modelName.startsWith("gemini-3");
+      const payloadWithThinking = JSON.parse(JSON.stringify(basePayload));
+      
+      if (supportsThinking) {
+        payloadWithThinking.generationConfig = {
+          ...(payloadWithThinking.generationConfig || {}),
+          thinkingConfig: { thinkingLevel: FIXED_THINKING_LEVEL }
+        };
+      }
+
+      try {
+        let response = await fetchWithTimeout(
+          `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payloadWithThinking) },
+          45000
+        );
+        let data = await response.json();
+
+        // thinkingConfig非対応等で400エラーになった場合は、thinkingConfigを外して再試行
+        if (data.error && response.status === 400 && supportsThinking) {
+          response = await fetchWithTimeout(
+            `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${apiKey}`,
+            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(basePayload) },
+            45000
+          );
+          data = await response.json();
+        }
+
+        if (data.error) {
+          console.warn(`[${modelName}] APIエラー:`, data.error.message);
+          lastErrorModel = `${modelName} Failed`;
+          continue;
+        }
+
+        if (data.candidates && data.candidates[0] && data.candidates[0].content) {
+          const parts = data.candidates[0].content.parts || [];
+          const answerPart = parts.find(p => typeof p.text === 'string' && !p.thought) || parts.find(p => typeof p.text === 'string');
+          if (answerPart) {
+            const usedLabel = supportsThinking ? `${modelName} (${FIXED_THINKING_LEVEL})` : modelName;
+            return { text: answerPart.text, usedModel: usedLabel };
+          }
+        }
+      } catch (err) {
+        console.warn(`[${modelName}] 通信失敗:`, err);
+        lastErrorModel = `${modelName} Failed`;
+      }
+    }
+    throw new Error(lastErrorModel);
   }
 
   imageInput.addEventListener('change', async (e) => {
@@ -215,7 +273,7 @@
       const reader = new FileReader();
       reader.onloadend = () => {
         resolve({
-          inlineData: { data: reader.result.split(',')[1], mimeType: file.type }
+          inlineData: { data: reader.result.split(',')[1], mimeType: file.type || 'image/jpeg' }
         });
       };
       reader.readAsDataURL(file);
@@ -284,8 +342,6 @@
     let processed = 0;
     progressText.textContent = `判定中... (0 / ${fileData.length})`;
 
-    const genAI = new GoogleGenerativeAI(apiKey);
-
     const chunkArray = (arr, size) => Array.from({ length: Math.ceil(arr.length / size) }, (v, i) => arr.slice(i * size, i * size + size));
     const fileChunks = chunkArray(fileData, 3);
 
@@ -306,27 +362,30 @@
         let successState = 'Error';
         let usedModel = 'API Error';
 
-        for (const modelName of MODEL_CANDIDATES) {
-          try {
-            const model = genAI.getGenerativeModel({ model: modelName });
-            const result = await model.generateContent([customPrompt, imagePart]);
-            const responseText = result.response.text();
-            
-            const jsonMatch = responseText.match(/\{[\s\S]*?\}/);
-            if (!jsonMatch) throw new Error("JSONが見つかりません");
+        const payload = {
+          contents: [{
+            parts: [
+              { text: customPrompt },
+              imagePart
+            ]
+          }]
+        };
 
-            const data = JSON.parse(jsonMatch[0]);
-            if (['Left', 'Right', 'Center'].includes(data.direction)) {
-              successState = data.direction;
-              usedModel = modelName;
-              break; 
-            } else {
-              throw new Error("フォーマット違反");
-            }
-          } catch (error) {
-            console.warn(`[${modelName}] 画像 ${globalIndex} の処理に失敗しました:`, error);
-            usedModel = `${modelName} Failed`;
+        try {
+          const res = await callGeminiWithFallback(apiKey, payload);
+          usedModel = res.usedModel;
+
+          const jsonMatch = res.text.match(/\{[\s\S]*?\}/);
+          if (!jsonMatch) throw new Error("JSONが見つかりません");
+
+          const data = JSON.parse(jsonMatch[0]);
+          if (['Left', 'Right', 'Center'].includes(data.direction)) {
+            successState = data.direction;
+          } else {
+            usedModel = `${res.usedModel} (Format Err)`;
           }
+        } catch (err) {
+          usedModel = err.message || 'API Error';
         }
 
         updateBadgeUI(globalIndex, successState);
@@ -334,7 +393,8 @@
         
         if (modelBadge) {
           const timeStr = dataObj.timeDisplay;
-          const color = usedModel.includes('Failed') ? '#ff8a80' : '#ccc';
+          const isErr = usedModel.includes('Failed') || usedModel.includes('Err') || usedModel === 'API Error';
+          const color = isErr ? '#ff8a80' : '#ccc';
           modelBadge.innerHTML = `${timeStr ? `⏱️ ${timeStr}<br>` : ''}<span style="color:${color};">${usedModel}</span>`;
           modelBadge.style.display = 'block';
         }
